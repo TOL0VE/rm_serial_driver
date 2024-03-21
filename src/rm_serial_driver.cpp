@@ -101,10 +101,10 @@ void RMSerialDriver::receiveData()
       serial_driver_->port()->receive(header);
 
       if (header[0] == 0x5A) {
-        data.resize(sizeof(ReceivePacket) - 1);
+        data.resize(sizeof(ReceivePacket));
         serial_driver_->port()->receive(data);
 
-        data.insert(data.begin(), header[0]);
+        // data.insert(data.begin(), header[0]);
         ReceivePacket packet = fromVector(data);
 
         bool crc_ok =
@@ -129,13 +129,13 @@ void RMSerialDriver::receiveData()
           t.transform.rotation = tf2::toMsg(q);
           tf_broadcaster_->sendTransform(t);
 
-          if (abs(packet.aim_x) > 0.01) {
-            aiming_point_.header.stamp = this->now();
-            aiming_point_.pose.position.x = packet.aim_x;
-            aiming_point_.pose.position.y = packet.aim_y;
-            aiming_point_.pose.position.z = packet.aim_z;
-            marker_pub_->publish(aiming_point_);
-          }
+          // if (abs(packet.aim_x) > 0.01) {
+          //   aiming_point_.header.stamp = this->now();
+          //   aiming_point_.pose.position.x = packet.aim_x;
+          //   aiming_point_.pose.position.y = packet.aim_y;
+          //   aiming_point_.pose.position.z = packet.aim_z;
+          //   marker_pub_->publish(aiming_point_);
+          // }
         } else {
           RCLCPP_ERROR(get_logger(), "CRC error!");
         }
