@@ -94,18 +94,18 @@ void RMSerialDriver::receiveData()
 {
   std::vector<uint8_t> header(1);
   std::vector<uint8_t> data;
-  data.reserve(sizeof(ReceivePacket));
+  data.reserve(sizeof(MCUPacket));
 
   while (rclcpp::ok()) {
     try {
       serial_driver_->port()->receive(header);
 
       if (header[0] == 0x5A) {
-        data.resize(sizeof(ReceivePacket));
+        data.resize(sizeof(MCUPacket));
         serial_driver_->port()->receive(data);
 
         // data.insert(data.begin(), header[0]);
-        ReceivePacket packet = fromVector(data);
+        MCUPacket packet = fromVector(data);
 
         bool crc_ok =
           crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
@@ -129,13 +129,13 @@ void RMSerialDriver::receiveData()
           t.transform.rotation = tf2::toMsg(q);
           tf_broadcaster_->sendTransform(t);
 
-          // if (abs(packet.aim_x) > 0.01) {
-          //   aiming_point_.header.stamp = this->now();
-          //   aiming_point_.pose.position.x = packet.aim_x;
-          //   aiming_point_.pose.position.y = packet.aim_y;
-          //   aiming_point_.pose.position.z = packet.aim_z;
-          //   marker_pub_->publish(aiming_point_);
-          // }
+          if (abs(packet.aim_x) > 0.01) {
+            aiming_point_.header.stamp = this->now();
+            aiming_point_.pose.position.x = packet.aim_x;
+            aiming_point_.pose.position.y = packet.aim_y;
+            aiming_point_.pose.position.z = packet.aim_z;
+            marker_pub_->publish(aiming_point_);
+          }
         } else {
           RCLCPP_ERROR(get_logger(), "CRC error!");
         }
@@ -157,7 +157,7 @@ void RMSerialDriver::sendData(const auto_aim_interfaces::msg::Target::SharedPtr 
     {"3", 3}, {"4", 4},       {"5", 5}, {"guard", 6}, {"base", 7}};
 
   try {
-    SendPacket packet;
+    MasterPacket packet;
     packet.tracking = msg->tracking;
     packet.id = id_unit8_map.at(msg->id);
     packet.armors_num = msg->armors_num;
