@@ -46,6 +46,7 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
   // Tracker reset service client
   reset_tracker_client_ = this->create_client<std_srvs::srv::Trigger>("/tracker/reset");
 
+  latency_time_ = this->declare_parameter("latency_time", 0.0);
   try {
     serial_driver_->init_port(device_name_, *device_config_);
     if (!serial_driver_->port()->is_open()) {
@@ -96,56 +97,77 @@ void RMSerialDriver::receiveData()
   std::vector<uint8_t> data;
   data.reserve(sizeof(MCUPacket));
 
+  enum class State { WAITING_FOR_HEADER, RECEIVING_DATA };
+
+  State state = State::WAITING_FOR_HEADER;
+  size_t packet_size = 0;
+  size_t received_size = 0;
+
   while (rclcpp::ok()) {
     try {
-      serial_driver_->port()->receive(header);
+      if (state == State::WAITING_FOR_HEADER) {
+        serial_driver_->port()->receive(header);
 
-      if (header[0] == 0x5A) {
-        data.resize(sizeof(MCUPacket));
-        serial_driver_->port()->receive(data);
-
-        // data.insert(data.begin(), header[0]);
-        MCUPacket packet = fromVector(data);
-
-        bool crc_ok =
-          crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
-        if (crc_ok) {
-          if (!initial_set_param_ || packet.detect_color != previous_receive_color_) {
-            setParam(rclcpp::Parameter("detect_color", packet.detect_color));
-            previous_receive_color_ = packet.detect_color;
-          }
-
-          if (packet.reset_tracker) {
-            resetTracker();
-          }
-
-          geometry_msgs::msg::TransformStamped t;
-          timestamp_offset_ = this->get_parameter("timestamp_offset").as_double();
-          t.header.stamp = this->now() + rclcpp::Duration::from_seconds(timestamp_offset_);
-          t.header.frame_id = "odom";
-          t.child_frame_id = "gimbal_link";
-          tf2::Quaternion q;
-          q.setRPY(packet.roll, packet.pitch, packet.yaw);
-          t.transform.rotation = tf2::toMsg(q);
-          tf_broadcaster_->sendTransform(t);
-
-          if (abs(packet.aim_x) > 0.01) {
-            aiming_point_.header.stamp = this->now();
-            aiming_point_.pose.position.x = packet.aim_x;
-            aiming_point_.pose.position.y = packet.aim_y;
-            aiming_point_.pose.position.z = packet.aim_z;
-            marker_pub_->publish(aiming_point_);
-          }
+        if (header[0] == 0x5A) {
+          state = State::RECEIVING_DATA;
+          packet_size = sizeof(MCUPacket);
+          data.resize(packet_size);
+          received_size = 0;
         } else {
-          RCLCPP_ERROR(get_logger(), "CRC error!");
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 20, "Invalid header: %02X", header[0]);
         }
-      } else {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 20, "Invalid header: %02X", header[0]);
+      } else if (state == State::RECEIVING_DATA) {
+        size_t remaining_size = packet_size - received_size;
+        std::vector<uint8_t> chunk(remaining_size);
+        serial_driver_->port()->receive(chunk);
+
+        std::copy(chunk.begin(), chunk.end(), data.begin() + received_size);
+        received_size += chunk.size();
+
+        if (received_size == packet_size) {
+          MCUPacket packet = fromVector(data);
+
+          bool crc_ok = crc16::Verify_CRC16_Check_Sum(
+            reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
+          if (crc_ok) {
+            if (!initial_set_param_ || packet.detect_color != previous_receive_color_) {
+              setParam(rclcpp::Parameter("detect_color", packet.detect_color));
+              previous_receive_color_ = packet.detect_color;
+            }
+
+            if (packet.reset_tracker) {
+              resetTracker();
+            }
+
+            geometry_msgs::msg::TransformStamped t;
+            timestamp_offset_ = this->get_parameter("timestamp_offset").as_double();
+            t.header.stamp = this->now() + rclcpp::Duration::from_seconds(timestamp_offset_);
+            t.header.frame_id = "odom";
+            t.child_frame_id = "gimbal_link";
+            tf2::Quaternion q;
+            q.setRPY(packet.roll, packet.pitch, packet.yaw);
+            t.transform.rotation = tf2::toMsg(q);
+            tf_broadcaster_->sendTransform(t);
+
+            if (abs(packet.aim_x) > 0.01) {
+              aiming_point_.header.stamp = this->now();
+              aiming_point_.pose.position.x = packet.aim_x;
+              aiming_point_.pose.position.y = packet.aim_y;
+              aiming_point_.pose.position.z = packet.aim_z;
+              marker_pub_->publish(aiming_point_);
+            }
+          } else {
+            RCLCPP_ERROR(get_logger(), "CRC error!");
+          }
+
+          state = State::WAITING_FOR_HEADER;
+        }
       }
     } catch (const std::exception & ex) {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 20, "Error while receiving data: %s", ex.what());
       reopenPort();
+      state = State::WAITING_FOR_HEADER;
     }
   }
 }
@@ -172,6 +194,8 @@ void RMSerialDriver::sendData(const auto_aim_interfaces::msg::Target::SharedPtr 
     packet.r1 = msg->radius_1;
     packet.r2 = msg->radius_2;
     packet.dz = msg->dz;
+    latency_time_ = this->get_parameter("latency_time").as_double();
+    packet.letency_time = latency_time_;
     crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
 
     std::vector<uint8_t> data = toVector(packet);
